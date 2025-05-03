@@ -1,0 +1,40 @@
+configuration:
+  General:
+    Drive_C-Label: System
+    Drive_D-Label: Data
+    TempDir: 
+    onTempDir: 
+    onLogDir: 
+    inetpub_Path: 
+  InstallFeature:
+    Telnet-Client: true
+    SNMP-Service: true
+    Backup-Features: true
+    Net-Framework-Core: true
+  InstallIIS:
+    Install_IIS: true
+    SMTP_Server: **REDACTED**
+    CPU_Count: 4
+    Add_DefaultDoc: **REDACTED**
+    RemoveHandler:
+      DeleteHandler1: **REDACTED**
+      DeleteHandler2: **REDACTED**
+    AddModule:
+      - name: **REDACTED**
+        type: **REDACTED**
+      - name: **REDACTED**
+        type: **REDACTED**
+    RemoveDefaultDoc:
+      - **REDACTED**
+      - **REDACTED**
+      - **REDACTED**
+      - **REDACTED**
+    SFTP:
+      configureSFTP: true
+      SFTP_SiteName: Default FTP Site
+      SFTP_Port: 990
+      SFTP_Root: 
+      SFTP_LogPath: 
+      SFTP_lowDataChannelPort: 1900
+      SFTP_highDataChannelPort: 1950
+      SFTP_AddressRestriction: **REDACTED**

@@ -1,0 +1,12 @@
+- name: 'Set multiple permissions'
+  ansible.windows.win_acl:
+    path: "{{item.path}}"
+    user: "{{item.user}}"
+    rights: "{{item.rights}}"
+    state: present
+    type: allow
+    inherit: "{{ item.inherit | default('ContainerInherit,ObjectInherit') }}"
+    propagation: None
+  loop: "{{permission_changes}}"
+  when: permission_changes is defined
+  

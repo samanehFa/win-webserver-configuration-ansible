@@ -1,0 +1,160 @@
+---
+- name: Check if new path exists
+  win_stat:
+    path: "{{ new_iis_path }}"
+  register: new_path_stat
+
+- name: Fail if new path does not exist
+  fail:
+    msg: "The new path {{ new_iis_path }} does not exist."
+  when: not new_path_stat.stat.exists
+
+- name: Check existing IIS backups
+  win_command: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list backups"
+  register: backups_list
+
+- name: Backup IIS Config with appcmd using Ansible fact if backup does not exist
+  win_command: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe add backup beforeRootMove"
+  when: "'beforeRootMove' not in backups_list.stdout"
+
+- name: Stop IIS Services
+  win_command: iisreset /stop
+
+- name: Check if C:\inetpub exists
+  win_stat:
+    path: "{{ oldinetpub }}"
+  register: inetpub_stat
+
+- name: Copy inetpub folder to new location with robocopy
+  win_command: robocopy "{{ oldinetpub }}" "{{ newinetpub }}" /E /COPY:DATSO /R:1 /W:1
+  register: robocopy_result
+  failed_when: robocopy_result.rc > 7
+  changed_when: robocopy_result.rc == 1 or robocopy_result.rc > 1
+  when: inetpub_stat.stat.exists
+
+- name: Check if target directory 'ws' already exists
+  win_stat:
+    path: "{{ newinetpub }}\\ws"
+  register: ws_dir_stat
+
+- name: Rename wwwroot to ws if 'ws' does not exist
+  win_shell: Rename-Item -Path "{{ newinetpub }}\\wwwroot" -NewName "ws"
+  when: not ws_dir_stat.stat.exists
+
+- name: Check if target directory 'system' already exists
+  win_stat:
+    path: "{{ newinetpub }}\\system"
+  register: system_dir_stat
+
+- name: Rename temp to system if 'system' does not exist
+  win_shell: Rename-Item -Path "{{ newinetpub }}\\temp" -NewName "system"
+  when: not system_dir_stat.stat.exists
+
+- name: Create directories
+  win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ newftp }}"
+    - "{{ newftp }}\\root"
+    - "{{ newftp }}\\logs"
+    - "{{ newinetpub }}\\temp"
+    - "{{ newinetpub }}\\temp\\ASP Compiled Templates"
+    - "{{ newinetpub }}\\logs\\errorLog"
+    - "{{ newinetpub }}\\logs\\logFiles"
+    - "{{ newinetpub }}\\ws\\empty\\root"
+    - "{{ newinetpub }}\\ws\\empty\\redirects"
+    - "{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v2.0.50727"
+    - "{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v4.0.30319"
+
+- name: Create Default.htm file
+  win_file:
+    path: "{{ newinetpub }}\\ws\\empty\\root\\Default.htm"
+    state: touch
+
+- name: Delete unnecessary folders and files
+  win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ newinetpub }}\\ftproot"
+    - "{{ newinetpub }}\\ws\\aspnet_client"
+    - "{{ newinetpub }}\\ws\\iis-85.png"
+    - "{{ newinetpub }}\\ws\\iisstart.htm"
+
+- name: Update AppPool isolation directory in the registry using reg add
+  win_shell: |
+    reg add 'HKLM\System\CurrentControlSet\Services\WAS\Parameters' /v ConfigIsolationPath /t REG_SZ /d '{{ newinetpub }}\system\appPools' /f
+
+- name: Update IIS configurations with appcmd
+  win_command: "{{ item }}"
+  loop:
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /siteDefaults.traceFailedRequestsLogging.directory:\"{{ newinetpub }}\\logs\\failedReqLogFiles\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /siteDefaults.logfile.directory:\"{{ newinetpub }}\\logs\\logFiles\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/log /centralBinaryLogFile.directory:\"{{ newinetpub }}\\logs\\logFiles\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/log /centralW3CLogFile.directory:\"{{ newinetpub }}\\logs\\logFiles\" /commit:apphost"
+
+- name: Update IIS configuration settings with appcmd
+  win_command: "{{ item.cmd }}"
+  loop:
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/configHistory -path:\"{{ newinetpub }}\\history\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/asp /cache.disktemplateCacheDirectory:\"{{ newinetpub }}\\system\\ASP Compiled Templates\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/httpCompression /directory:\"{{ newinetpub }}\\system\\IIS Temporary Compressed Files\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set vdir \"Default Web Site/\" -physicalPath:\"{{ newinetpub }}\\ws\\empty\\root\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='401'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='403'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='404'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='405'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='406'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='412'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='500'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='501'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+    - { cmd: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:httpErrors /[statusCode='502'].prefixLanguageFilePath:\"{{ newinetpub }}\\custerr\" /commit:apphost" }
+  loop_control:
+    label: "{{ item.cmd }}"
+
+- name: Update registry settings for IIS root directories using reg add
+  win_shell: |
+    reg add HKLM\Software\Microsoft\inetstp /v PathWWWRoot /t REG_SZ /d $newinetpub\ws /f
+    reg add HKLM\Software\Microsoft\inetstp /v PathFTPRoot /t REG_SZ /d $newftp\root /f
+
+- name: Copy Temporary ASP.NET Files for both x64 and x32
+  win_command: >
+    robocopy "{{ item.src }}" "{{ item.dest }}" /E /COPY:DATSO /R:1 /W:1
+  loop:
+    - src: 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\Temporary ASP.NET Files'
+      dest: "{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v4.0.30319\\Framework64"
+    - src: 'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\Temporary ASP.NET Files'
+      dest: "{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v4.0.30319\\Framework"
+
+- name: Update web.config files
+  win_command: "{{ item }}"
+  loop:
+    - '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/compilation /tempDirectory:"{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v2.0.50727\\Framework" /commit:webroot /clr:2'
+    - '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/compilation /tempDirectory:"{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v2.0.50727\\Framework64" /commit:webroot /clr:2'
+    - '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/compilation /tempDirectory:"{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v4.0.30319\\Framework" /commit:webroot /clr:4'
+    - '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/compilation /tempDirectory:"{{ newinetpub }}\\system\\Temporary ASP.NET Files\\v4.0.30319\\Framework64" /commit:webroot /clr:4'
+
+- name: Delete Classic .NET AppPool if it exists
+  win_command: '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe delete APPPOOL ".NET v4.5 Classic"'
+  register: delete_apppool
+  ignore_errors: true
+  failed_when:
+    - delete_apppool.rc != 0
+    - '"Cannot find APPPOOL object with identifier" not in delete_apppool.stdout'
+
+- name: Activate logging in applicationHost.config
+  win_command: "{{ item }}"
+  loop:
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /[id='1'].logFile.logFormat:\"W3C\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /[id='1'].logFile.period:\"Daily\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /[id='1'].logFile.localTimeRollover:\"True\" /commit:apphost"
+    - "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /[id='1'].logFile.enabled:\"True\" /commit:apphost"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Increase Dynamic Website Activation Threshold
+  win_command: '{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /[id="1"].dynamicCompressionEnabled:true'
+  
+- name: Restart IIS Services
+  win_command: iisreset /start

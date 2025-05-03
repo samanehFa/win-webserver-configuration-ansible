@@ -1,0 +1,98 @@
+---
+- name: Create base remote directory for assemblies and tools
+  ansible.windows.win_file:
+    path: "{{ remote_assemblies_path }}"
+    state: directory
+
+- name: Create subdirectories for tools and assemblies
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - "{{ remote_assemblies_path }}"
+    - "{{ remote_assemblies_path }}\\Tools"
+    - "{{ remote_assemblies_path }}\\Tools\\ToolsetV2"
+    - "{{ remote_assemblies_path }}\\Tools\\ToolsetV4"
+    - "{{ remote_assemblies_path }}\\assemblies"
+    - "{{ remote_assemblies_path }}\\assemblies\\NET4"
+    - "{{ remote_assemblies_path }}\\assemblies\\NET2"
+
+- name: Upload tools, libraries, and config files
+  ansible.windows.win_copy:
+    src: "{{ item.src }}" 
+    dest: "{{ remote_assemblies_path }}\\{{ item.dest }}"
+  loop:
+    - { src: "NET2/LibraryA.dll", dest: "assemblies/NET2/LibraryA.dll" }
+    - { src: "NET2/LibraryB.dll", dest: "assemblies/NET2/LibraryB.dll" }
+    - { src: "NET2/LibraryC.dll", dest: "assemblies/NET2/LibraryC.dll" }
+    - { src: "NET2/LibraryD.dll", dest: "assemblies/NET2/LibraryD.dll" }
+    - { src: "NET4/LibraryE.dll", dest: "assemblies/NET4/LibraryE.dll" }
+    - { src: "NET4/LibraryF.dll", dest: "assemblies/NET4/LibraryF.dll" }
+    - { src: "NET4/LibraryG.dll", dest: "assemblies/NET4/LibraryG.dll" }
+    - { src: "NET4/LibraryH.dll", dest: "assemblies/NET4/LibraryH.dll" }
+    - { src: "toolset2/tool.exe", dest: "Tools/ToolsetV2/tool.exe" }
+    - { src: "toolset4/tool.exe", dest: "Tools/ToolsetV4/tool.exe" }
+    - { src: "toolset4/tool.exe.config", dest: "Tools/ToolsetV4/tool.exe.config" }
+    - { src: "CommonLibrary.dll", dest: "assemblies/CommonLibrary.dll" }
+    - { src: "HelperLibrary.dll", dest: "assemblies/HelperLibrary.dll" }
+    - { src: "NetworkLibrary.dll", dest: "assemblies/NetworkLibrary.dll" }
+    - { src: "SerializerLibrary.dll", dest: "assemblies/SerializerLibrary.dll" }
+    - { src: "custom.config", dest: "assemblies/custom.config" } 
+    - { src: "SqlClient.SNI.x64.dll", dest: "assemblies/SqlClient.SNI.x64.dll" }
+    - { src: "SqlClient.SNI.x86.dll", dest: "assemblies/SqlClient.SNI.x86.dll" }
+
+- name: Install general assemblies with ToolsetV4
+  ansible.windows.win_command: 
+    cmd: "{{ remote_assemblies_path }}\\Tools\\ToolsetV4\\tool.exe /if {{ remote_assemblies_path }}\\assemblies\\{{ item }}"
+  loop:
+    - "CommonLibrary.dll"
+    - "HelperLibrary.dll"
+    - "NetworkLibrary.dll"
+    - "SerializerLibrary.dll"
+
+- name: Check if .NET 4.0 is installed
+  ansible.windows.win_stat: 
+    path: "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319"
+  register: dotnet4_directory
+
+- name: Install .NET 4.0 assemblies with ToolsetV4
+  ansible.windows.win_command:
+    cmd: "{{ remote_assemblies_path }}\\Tools\\ToolsetV4\\tool.exe /if {{ remote_assemblies_path }}\\assemblies\\NET4\\{{ item }}"
+  loop:
+    - "LibraryF.dll"
+    - "LibraryG.dll"
+    - "LibraryH.dll"
+    - "LibraryE.dll"
+  when: dotnet4_directory.stat.exists
+
+- name: Check if .NET 2.0 is installed
+  ansible.windows.win_stat: 
+    path: "C:\\Windows\\Microsoft.NET\\Framework64\\v2.0.50727"
+  register: dotnet2_directory
+
+- name: Install .NET 2.0 assemblies with ToolsetV2
+  ansible.windows.win_command:
+    cmd: "{{ remote_assemblies_path }}\\Tools\\ToolsetV2\\tool.exe /if {{ remote_assemblies_path }}\\assemblies\\NET2\\{{ item }}"
+  loop:
+    - "LibraryA.dll"
+    - "LibraryB.dll"
+    - "LibraryC.dll"
+    - "LibraryD.dll"
+  when: dotnet2_directory.stat.exists
+
+- name: Check if .NET config directory exists
+  ansible.windows.win_stat:
+    path: "C:\\Windows\\Microsoft.NET\\Config"
+  register: dotnet_config_directory
+
+- name: Create .NET config directory if missing
+  ansible.windows.win_file:
+    path: "C:\\Windows\\Microsoft.NET\\Config"
+    state: directory
+  when: dotnet_config_directory.stat.exists == False
+
+- name: Copy configuration file to .NET config directory
+  ansible.windows.win_copy:
+    src: "{{ remote_assemblies_path }}\\assemblies\\custom.config"
+    dest: "C:\\Windows\\Microsoft.NET\\Config\\custom.config"
+    remote_src: yes

@@ -1,0 +1,173 @@
+---
+- name: Check if SFTP should be configured
+  set_fact:
+    configure_sftp: "{{ configuration.InstallIIS.SFTP.configureSFTP }}"
+
+- name: Set SFTP_Binding variable
+  set_fact:
+    SFTP_Binding: "*:{{ configuration.InstallIIS.SFTP.SFTP_Port }}:"
+
+- name: Configure SFTP settings if enabled
+  when: configure_sftp
+  block:
+    - name: Create local group 'SFTP User Group'
+      win_group:
+        name: "SFTP User Group"
+        description: "SFTP User Group"
+        state: present
+
+    - name: Configure firewall support settings
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.ftpServer/firewallSupport
+        /lowDataChannelPort:{{ configuration.InstallIIS.SFTP.SFTP_lowDataChannelPort }}
+        /highDataChannelPort:{{ configuration.InstallIIS.SFTP.SFTP_highDataChannelPort }}
+        /commit:apphost
+
+    - name: Configure log file directory
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites
+        /siteDefaults.ftpServer.logFile.directory:"{{ configuration.InstallIIS.SFTP.SFTP_LogPath }}"
+        /commit:apphost
+
+    - name: Configure log file flags
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites
+        /siteDefaults.ftpServer.logFile.logExtFileFlags:"Date, Time, ClientIP, UserName, SiteName, ComputerName, ServerIP, Method, UriStem, FtpStatus, Win32Status, BytesSent, BytesRecv, TimeTaken, ServerPort, Host, FtpSubStatus, Session, FullPath, Info, ClientPort"
+        /commit:apphost
+
+    - name: Set banner message to system hostname
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites
+        /siteDefaults.ftpServer.messages.bannerMessage:"{{ ansible_env.COMPUTERNAME }}"
+        /commit:apphost
+
+    - name: Enable basic authentication
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites
+        /siteDefaults.ftpServer.security.authentication.basicAuthentication.enabled:true
+        /commit:apphost
+
+    - name: Configure directory browsing style
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites
+        /siteDefaults.ftpServer.directoryBrowse.showFlags:"StyleUnix, DisplayAvailableBytes"
+        /commit:apphost
+
+    - name: Check if SFTP site exists
+      win_command: "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list site \"{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}\""
+      register: site_check
+      ignore_errors: true
+
+    - name: Add SFTP site if it does not exist
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe add site
+        /name:"{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}"
+        /physicalpath:"{{ configuration.InstallIIS.SFTP.SFTP_Root }}"
+      when: site_check.rc != 0
+      register: site_add_result
+      failed_when: site_add_result.rc != 0 and 'ERROR' not in site_add_result.stdout | lower
+
+    - name: List current bindings for the site
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list sites "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}"
+      register: site_bindings
+      changed_when: false
+
+    - name: Check if specific SFTP binding exists
+      set_fact:
+        binding_exists: "{{ SFTP_Binding in site_bindings.stdout }}"
+
+    - name: Add new SFTP site binding if it does not exist
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /+"[name='{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}'].bindings.[protocol='ftp',bindingInformation='{{ SFTP_Binding }}']" /commit:apphost
+      when: not binding_exists
+
+    - name: Set SSL control channel policy to 'SslRequire'
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /"[name='{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}']".ftpServer.security.ssl.controlChannelPolicy:"SslRequire" /commit:apphost
+
+    - name: Set SSL data channel policy to 'SslRequire'
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /"[name='{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}']".ftpServer.security.ssl.dataChannelPolicy:"SslRequire" /commit:apphost
+
+    - name: Enable SSL 128-bit encryption
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /"[name='{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}']".ftpServer.security.ssl.ssl128:"true" /commit:apphost
+
+    - name: Configure IP security - allow unlisted
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}" -section:system.ftpServer/security/ipSecurity /allowUnlisted:"True" /commit:apphost
+
+    - name: Use PowerShell to check for FTP rule
+      win_shell: |
+          $config = & "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe" list config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}" -section:system.ftpServer/security/authorization
+          if ($config -like '*accessType="Allow" users="*" permissions="Read"*') {
+            Write-Output "true"
+          } else {
+            Write-Output "false"
+          }
+      register: rule_exists_script
+
+    - name: Set fact based on PowerShell output
+      set_fact:
+        rule_exists: "{{ 'true' in rule_exists_script.stdout }}"
+
+    - name: Configure FTP server authorization for all users if not exists
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}" -section:system.ftpServer/security/authorization /+"[accessType='Allow',users='*',permissions='Read']" /commit:apphost
+      when: not rule_exists
+
+    - name: Check if virtual directory exists
+      win_shell: |
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list vdir /app.name:"{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/"
+      register: vdir_check
+      changed_when: false
+
+    - name: Add virtual directory if not exists
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe add vdir /app.name:"{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/" /path:/inetpub /physicalPath:C:\\inetpub\\ /commit:apphost
+      when: "'inetpub' not in vdir_check.stdout"
+
+    - name: Check if read permissions exist
+      win_shell: |
+        $config = & "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe" list config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/inetpub" -section:system.ftpServer/security/authorization
+        if ($config -like '*accessType="Allow" users="*" permissions="Read"*') {
+          Write-Output "true"
+        } else {
+          Write-Output "false"
+        }
+      register: read_permission_exists
+      changed_when: false
+
+    - name: Remove read permissions for virtual directory if exists
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/inetpub" -section:system.ftpServer/security/authorization /-"[accessType='Allow',users='*',permissions='Read']" /commit:apphost
+      when: read_permission_exists.stdout == "true"
+      ignore_errors: true
+
+    - name: Check if read and write permissions exist
+      win_shell: |
+        $config = & "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe" list config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/inetpub" -section:system.ftpServer/security/authorization
+        if ($config -like '*accessType="Allow" users="*" permissions="Read, Write"*') {
+          Write-Output "true"
+        } else {
+          Write-Output "false"
+        }
+      register: rw_permission_exists
+      changed_when: false
+
+    - name: Add read and write permissions for virtual directory if not exists
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config "{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}/inetpub" -section:system.ftpServer/security/authorization /+"[accessType='Allow',users='*',permissions='Read,Write']" /commit:apphost
+      when: rw_permission_exists.stdout == "false"
+
+    - name: Allow read uploads in progress
+      win_command: >
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /"[name='{{ configuration.InstallIIS.SFTP.SFTP_SiteName }}']".ftpServer.fileHandling.allowReadUploadsInProgress:"True" /commit:apphost
+
+    - name: Include Set-Permission role for setting permissions
+      include_tasks: set-permission/tasks/main.yml
+      vars:
+        permission_changes:
+          - { path: "{{ configuration.InstallIIS.SFTP.SFTP_Root }}", user: 'SFTP User Group', rights: 'Read' }
+          - { path: "C:\\inetpub", user: 'SFTP User Group', rights: 'FullControl' }

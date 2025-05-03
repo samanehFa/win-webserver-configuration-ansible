@@ -1,0 +1,254 @@
+- name: Display all gathered facts
+  ansible.builtin.debug:
+    var: ansible_facts
+
+- name: Check if D drive is present
+  win_shell: |
+    Get-Volume | Where-Object { $_.DriveLetter -eq 'D' }
+  register: d_drive_check
+  ignore_errors: true
+
+- name: Label D drive as 'Data'
+  win_command: >
+    label D: "{{ configuration.General['Drive_D-Label'] }}"
+  when: 
+    - d_drive_check.stdout | length > 0
+
+- name: Get current owner of D:\
+  win_shell: Get-Acl D:\ | Select-Object -ExpandProperty Owner | Out-String -Stream | Select-Object -First 1
+  register: acl_owner
+  changed_when: false
+
+- name: Display the owner of D:\
+  debug:
+    var: acl_owner.stdout
+
+- name: Set acl_owner fact with trimmed output
+  set_fact:
+    acl_owner_trimmed: "{{ acl_owner.stdout | trim }}"
+
+- name: Set owner of D:\ to Administrators if not already
+  win_owner:
+    path: D:\
+    user: Administrators
+  when: "'Administrators' not in acl_owner_trimmed"
+
+- name: Grant 'FullControl' to the original owner on D:\
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: D:\
+        user: "{{ acl_owner_trimmed | regex_replace('^.*\\\\', '') }}"
+        rights: FullControl
+
+- name: Remove permissions for Everyone and Builtin\Users on D:\
+  include_tasks: remove-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - { path: "D:\\", rights: "ReadAndExecute", user: "Everyone" }
+      - { path: "D:\\", rights: "ReadAndExecute", user: "BUILTIN\\Users" }
+
+- name: Set permission for "BUILTIN\Authenticated Users"
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: D:\
+        rights: Read
+        user: 'Authenticated Users'
+        inherit: ContainerInherit
+
+- name: Copy C:\Windows\Temp\ structure to the specified TempDir with xcopy /TEO
+  win_command: "xcopy C:\\Windows\\Temp\\ {{ configuration.General.TempDir }}\\ /T /E /O"
+
+- name: Get current owner of TempDir
+  win_shell: Get-Acl "{{ configuration.General.TempDir }}" | Select-Object -ExpandProperty Owner| Out-String -Stream | Select-Object -First 1
+  register: tempdir_owner
+  changed_when: false
+
+- name: Display the owner of TempDir
+  debug:
+    var: tempdir_owner.stdout
+
+- name: Set tempdir_owner fact with trimmed output
+  set_fact:
+     tempdir_owner_trimmed: "{{ tempdir_owner.stdout | trim }}"
+
+- name: Set owner of TempDir to Administrators if not already
+  win_owner:
+    path: "{{ configuration.General.TempDir }}"
+    user: Administrators
+  when: "'Administrators' not in tempdir_owner_trimmed"
+
+- name: Grant 'FullControl' to the original owner on TempDir
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: "{{ configuration.General.TempDir }}"
+        user: "{{ tempdir_owner_trimmed | regex_replace('^.*\\\\', '') }}"
+        rights: FullControl
+
+- name: Ensure C:\Windows\Microsoft.NET\Config directory exists
+  win_file:
+    path: C:\Windows\Microsoft.NET\Config
+    state: directory
+
+- name: Set 'ReadAndExecute' permissions for 'BUILTIN\IIS_IUSRS'
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: C:\Windows\Microsoft.NET\Config
+        user: BUILTIN\IIS_IUSRS
+        rights: ReadAndExecute
+
+- name: Ensure TempDir exists
+  win_file:
+    path: "{{ configuration.General.TempDir }}"
+    state: directory
+
+- name: Set TMP and Temp environment variables
+  win_environment:
+    state: present
+    name: "{{ item.key }}"
+    value: "{{ configuration.General.TempDir }}"
+    level: machine
+  loop:
+    - { key: "TMP" }
+    - { key: "Temp" }
+
+- name: Grant 'Modify' permissions to 'BUILTIN\IIS_IUSRS' on TempDir
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: "{{ configuration.General.TempDir }}"
+        user: BUILTIN\IIS_IUSRS
+        rights: Modify
+
+- name: install IIS 
+  include_tasks: install-IIS/tasks/main.yml
+  when: configuration.InstallIIS.Install_IIS | bool
+
+- name: Wait for 10 seconds after IIS installation
+  pause:
+    seconds: 10
+  when: configuration.InstallIIS.Install_IIS | bool
+
+- name: Move IIS to the new path
+  include_tasks: move-IIS/tasks/main.yml
+  vars: 
+    new_iis_path: "{{ configuration.General.inetpub_Path }}"
+    sysdrive: "{{ ansible_env.SystemDrive }}"
+    windir: "{{ ansible_env.windir }}"
+    newinetpub: "{{ new_iis_path }}inetpub"
+    oldinetpub: "{{ ansible_env.SystemDrive }}\\inetpub"
+    newftp: "{{ new_iis_path }}ftp"
+    
+- name: Set Inetpub and FTP paths based on the new base path
+  set_fact:
+    newInetpub_Path: "{{ configuration.General.inetpub_Path }}inetpub"
+    newFTP_Path: "{{ configuration.General.inetpub_Path }}ftp"
+
+- name: Get current owner of Inetpub_Path
+  win_shell: Get-Acl "{{ newInetpub_Path }}" | Select-Object -ExpandProperty Owner | Out-String -Stream | Select-Object -First 1
+  register: Inetpubpath_owner
+  changed_when: false
+
+- name: Set Inetpub_Path fact with trimmed output
+  set_fact:
+    Inetpub_Path_trimmed: "{{ Inetpubpath_owner.stdout | trim }}"
+
+- name: Set owner of Inetpub_Path to Administrators if not already
+  win_owner:
+    path: "{{ configuration.General.inetpub_Path }}" 
+    user: Administrators
+  when: "'Administrators' not in Inetpub_Path_trimmed"
+
+- name: Grant 'FullControl' to the original owner on Inetpub_path
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - path: "{{ configuration.General.inetpub_Path }}"
+        user: "{{ Inetpub_Path_trimmed | regex_replace('^.*\\\\', '') }}"
+        rights: FullControl
+
+- name: Remove permissions from Inetpub_Path
+  include_tasks: remove-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - { path: "{{ configuration.General.inetpub_Path }}", user: "CREATOR OWNER", rights: "ReadAndExecute"}
+      - { path: "{{ configuration.General.inetpub_Path }}", user: "BUILTIN\\Users", rights: "ReadAndExecute"}  
+
+- name: Disable inheritance on FTP_Path while preserving existing inherited permissions
+  ansible.windows.win_acl_inheritance:
+    path: "{{newFTP_Path}}"
+    state: present
+    reorganize: yes
+
+- name: Remove permissions from FTP_Path
+  include_tasks: remove-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - { path: "{{newFTP_Path}}", user: "CREATOR OWNER", rights: "FullControl"}
+      - { path: "{{newFTP_Path}}", user: "BUILTIN\\Users", rights: "Write" }
+
+- name: Set 'onTemp' machine environment variable
+  win_environment:
+    state: present
+    name: onTemp
+    value: "{{ configuration.General.onTempDir }}"
+    level: machine
+
+- name: Set 'onLog' machine environment variable
+  win_environment:
+    state: present
+    name: onLog
+    value: "{{ configuration.General.onLogDir }}"
+    level: machine
+
+- name: Grant 'Modify' to onTempDir and onLogDir
+  include_tasks: set-permission/tasks/main.yml
+  vars:
+    permission_changes:
+      - { path: "{{ configuration.General.onTempDir }}", user: "BUILTIN\\IIS_IUSRS", rights: "Modify"}
+      - { path: "{{ configuration.General.onLogDir }}", user: "BUILTIN\\IIS_IUSRS", rights: "Modify"}
+
+- name: Configure IIS
+  include_tasks: IISConfiguration/tasks/main.yml
+  vars:
+    configuration:
+      InstallIIS:
+        Install_IIS: true
+        SMTP_Server: mailout.onnetworks.de
+        CPU_Count: 4
+        Add_DefaultDoc: _startonpublix
+        RemoveHandler:
+          - TRACEVerbHandler
+          - OPTIONSVerbHandler
+        AddModule:
+          - name: "ON.Defense.SQLInjectionV3"
+            type: "ON.Defense.SqlInjectionFilter.Filter, ON.Defense.SqlInjectionFilterV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43"
+          - name: "ON.ErrorhandlingV3"
+            type: "ON.Diagnostics.HttpModules.ErrorHandlingModule, ONV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43"
+        RemoveDefaultDoc:
+          - Default.asp
+          - index.htm
+          - index.html
+          - iisstart.htm
+
+- name: Configure FTPS
+  include_tasks: Set-FTPSConfiguration/tasks/main.yml
+  vars:
+    configuration:
+      InstallIIS:
+        SFTP:
+          configureSFTP: true
+          SFTP_SiteName: Default FTP Site
+          SFTP_Port: 990
+          SFTP_Root: D:\ftp\root
+          SFTP_LogPath: D:\ftp\logs
+          SFTP_lowDataChannelPort: 1900
+          SFTP_highDataChannelPort: 1950
+          SFTP_AddressRestriction: 192.168.222.0
+        
+- name: Install Assemblies
+  include_tasks: install-assemblies/tasks/main.yml
+  when: configuration.General.InstallAssemblies | bool

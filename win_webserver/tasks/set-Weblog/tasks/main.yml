@@ -1,0 +1,58 @@
+---
+- name: Create necessary directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop:
+    - 'C:\Program Files\SomeApp'  
+    - 'C:\Program Files\SomeApp\Weblog-Archivierung'
+    - 'D:\logs'
+    - 'D:\logs\scriptlog'
+
+- name: Copy Archive-Weblogs script to target directory
+  ansible.windows.win_copy:
+    src: "Weblog-Archivierung/Archive-Weblogs.ps1"
+    dest: 'C:\Program Files\SomeApp\Weblog-Archivierung\Archive-Weblogs.ps1'
+
+- name: Copy Archive-Weblogs xml file to target directory
+  ansible.windows.win_copy:
+    src: "Weblog-Archivierung/Archive-Weblogs.xml"
+    dest: 'C:\Program Files\SomeApp\Weblog-Archivierung\Archive-Weblogs.xml'
+
+- name: Check if Archive-Weblogs task exists
+  win_shell: |
+    $task = Get-ScheduledTask -TaskName "Archive-Weblogs" -ErrorAction SilentlyContinue
+    if ($task) {
+      Write-Output "exists"
+    } else {
+      Write-Output "not exists"
+    }
+  register: task_check
+
+- name: Read Archive-Weblogs XML content and register scheduled task if not existing
+  win_shell: |
+    $xmlContent = Get-Content -Path "C:\Program Files\SomeApp\Weblog-Archivierung\Archive-Weblogs.xml" -Raw
+    Register-ScheduledTask -Xml $xmlContent -TaskName "Archive-Weblogs" -User SYSTEM
+  args:
+    executable: powershell
+  when: "'exists' not in task_check.stdout"
+
+- name: Check if Weblog-Archivierung scheduled task exists
+  win_shell: |
+    $task = Get-ScheduledTask -TaskName "Archive-Weblogs" -ErrorAction SilentlyContinue
+    if ($task) {
+      Write-Output "Exists"
+    } else {
+      Write-Output "Not exists"
+    }
+  register: task_check
+
+- name: Output task existence
+  debug:
+    msg: "The scheduled task exists."
+  when: "'Exists' in task_check.stdout"
+
+- name: Output task non-existence
+  debug:
+    msg: "The scheduled task does not exist."
+  when: "'Not exists' in task_check.stdout"

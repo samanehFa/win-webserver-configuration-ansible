@@ -1,0 +1,51 @@
+---
+- name: Create base remote directory for runtime installers
+  ansible.windows.win_file:
+    path: "{{ remote_path }}\\RuntimeInstallers"
+    state: directory
+
+- name: Copy runtime installers to remote system (x86 versions)
+  ansible.windows.win_copy:
+    src: "RuntimeInstallers/runtime_x86_{{ item.version }}.exe"
+    dest: "{{ remote_path }}\\RuntimeInstallers\\runtime_x86_{{ item.version }}.exe"
+  loop: "{{ runtime_versions }}"
+  loop_control:
+    label: "{{ item.version }}"
+
+- name: Copy runtime installers to remote system (x64 versions)
+  ansible.windows.win_copy:
+    src: "RuntimeInstallers/runtime_x64_{{ item.version }}.exe"
+    dest: "{{ remote_path }}\\RuntimeInstallers\\runtime_x64_{{ item.version }}.exe"
+  loop: "{{ runtime_versions }}"
+  loop_control:
+    label: "{{ item.version }}"
+
+- name: Install runtimes (x86 versions)
+  ansible.windows.win_command:
+    cmd: "{{ remote_path }}\\RuntimeInstallers\\runtime_x86_{{ item.version }}.exe {{ item.args }}"
+  loop: "{{ runtime_versions }}"
+  loop_control:
+    label: "{{ item.version }}"
+  register: install_results_x86
+  ignore_errors: true
+
+- name: Install runtimes (x64 versions)
+  ansible.windows.win_command:
+    cmd: "{{ remote_path }}\\RuntimeInstallers\\runtime_x64_{{ item.version }}.exe {{ item.args }}"
+  loop: "{{ runtime_versions }}"
+  loop_control:
+    label: "{{ item.version }}"
+  register: install_results_x64
+  ignore_errors: true
+
+- name: Check installation results (x86)
+  ansible.builtin.debug:
+    msg: "Installation of {{ item.item.version }} x86 failed with exit code {{ item.rc }}"
+  loop: "{{ install_results_x86.results }}"
+  when: item.rc != 0
+
+- name: Check installation results (x64)
+  ansible.builtin.debug:
+    msg: "Installation of {{ item.item.version }} x64 failed with exit code {{ item.rc }}"
+  loop: "{{ install_results_x64.results }}"
+  when: item.rc != 0

@@ -1,0 +1,53 @@
+configuration:
+  General:
+    - Drive_C-Label: System
+    - Drive_D-Label: Data
+    - TempDir: D:\Temp
+    - onTempDir: D:\inetpub\temp
+    - onLogDir: D:\inetpub\logs\errorlog
+    - inetpub_Path: D
+  InstallFeature:
+    - 1:
+        name: Telnet-Client
+        value: true
+    - 2:
+        name: SNMP-Service
+        value: true
+    - 3:
+        name: Backup-Features
+        value: true
+    - 4:
+        name: Net-Framework-Core
+        value: true
+  InstallIIS:
+    - Install_IIS: true
+    - SMTP_Server: mailout.onnetworks.de
+    - CPU_Count: 4
+    - Add_DefaultDoc: _startonpublix
+    - RemoveHandler:
+        - DeleteHandler1: TRACEVerbHandler
+        - DeleteHandler2: OPTIONSVerbHandler
+    - AddModule:
+        - module_1: "name='ON.Defense.SQLInjectionV3',type='ON.Defense.SqlInjectionFilter.Filter, ON.Defense.SqlInjectionFilterV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43'"
+          name: ON.Defense.SqlInjectionFilter
+        - module_2: "name='ON.ErrorhandlingV3',type='ON.Diagnostics.HttpModules.ErrorHandlingModule, ONV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43'"
+          name: ON.Monitor
+    - AddModule4:
+        - module_1: "name='ON.Defense.SQLInjectionV3',type='ON.Defense.SqlInjectionFilter.Filter, ON.Defense.SqlInjectionFilterV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43'"
+          name: ON.Defense.SqlInjectionFilter
+        - module_2: "name='ON.ErrorhandlingV3',type='ON.Diagnostics.HttpModules.ErrorHandlingModule, ONV3, Version=9.9.9.9, Culture=neutral, PublicKeyToken=ee6fcb8d870f7e43'"
+          name: ON.Monitor
+    - RemoveDefaultDoc:
+        - doc_1: Default.asp
+        - doc_2: index.htm
+        - doc_3: index.html
+        - doc_4: iisstart.htm
+    - SFTP:
+        - configureSFTP: true
+        - SFTP_SiteName: Default FTP Site
+        - SFTP_Port: 990
+        - SFTP_Root: D:\ftp\root
+        - SFTP_LogPath: D:\ftp\logs
+        - SFTP_lowDataChannelPort: 1900
+        - SFTP_highDataChannelPort: 1950
+        - SFTP_AddressRestriction: 192.168.222.0

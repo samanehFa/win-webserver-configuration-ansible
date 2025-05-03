@@ -1,0 +1,98 @@
+# Ansible Playbook: Configure IIS on Windows
+# This version is sanitized for sharing. Variable values are assumed to be defined in external vars files.
+
+- name: Set SMTP server and CPU count
+  set_fact:
+    smtp_server: "{{ configuration.InstallIIS.SMTP_Server }}"  # Defined externally
+    cpu_count: "{{ configuration.InstallIIS.CPU_Count }}"      # Defined externally
+
+- name: Set maximum connections
+  set_fact:
+    max_connections: "{{ cpu_count | int * 25 }}"
+
+- name: Set Email Address (placeholder domain)
+  set_fact:
+    email_address: "{{ ansible_hostname }}@example.local"
+
+- name: Configure general IIS settings
+  win_shell: |
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/sites /siteDefaults.logFile.logExtFileFlags:"Date, Time, ClientIP, UserName, SiteName, ComputerName, ServerIP, Method, UriStem, UriQuery, HttpStatus, Win32Status, BytesSent, BytesRecv, TimeTaken, ServerPort, UserAgent, Cookie, Referer, ProtocolVersion, Host, HttpSubStatus" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/httpCompression /"[name='gzip'].staticCompressionLevel:10" /"[name='gzip'].dynamicCompressionLevel:5" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/httpErrors /existingResponse:"PassThrough" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/applicationPools /applicationPoolDefaults.recycling.periodicRestart.time:"00:00:00" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/applicationPools /applicationPoolDefaults.processModel.idleTimeout:"00:00:00" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.applicationHost/applicationPools /applicationPoolDefaults.recycling.logEventOnRecycle:"Time, Requests, Schedule, Memory, IsapiUnhealthy, OnDemand, ConfigChange, PrivateMemory" /commit:apphost
+    {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/httpCompression /noCompressionForProxies:"False" /commit:apphost
+    $customHeaderExists = {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list config -section:system.webServer/httpProtocol | Select-String -Pattern "name='X-Powered-By'"
+    if ($customHeaderExists) {
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/httpProtocol /-"customHeaders.[name='X-Powered-By']" /commit:apphost
+    }
+
+- name: Ensure unique MIME types in IIS
+  win_shell: |
+    $xmlOutput = {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list config -section:system.webServer/staticContent /xml
+    [xml]$config = $xmlOutput
+    $mimeExists = $config.SelectNodes("//mimeMap[@fileExtension='{{ item.extension }}']") -ne $null
+    if (-not $mimeExists) {
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/staticContent /+"[fileExtension='{{ item.extension }}',mimeType='{{ item.mime_type }}']" /commit:apphost
+    }
+  loop:
+    - { extension: '.woff2', mime_type: 'application/font-woff' }
+    - { extension: '.svg', mime_type: 'image/svg+xml' }
+    - { extension: '.htm', mime_type: 'text/html;charset=utf-8' }
+    - { extension: '.html', mime_type: 'text/html;charset=utf-8' }
+  register: mime_addition_result
+  failed_when: "mime_addition_result.rc != 0 and 'ERROR' in mime_addition_result.stdout"
+
+- name: Remove default documents
+  win_shell: |
+    $exists = {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list config "Default Web Site" -section:system.webServer/defaultDocument | Select-String -Pattern "{{ item }}"
+    if ($exists) {
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/defaultDocument /-"files.[value='{{ item }}']" /commit:apphost
+    }
+  loop: "{{ configuration.InstallIIS.RemoveDefaultDoc }}"
+  register: remove_default_doc_result
+  failed_when: "remove_default_doc_result.rc != 0 and 'Cannot find requested collection element' not in remove_default_doc_result.stdout"
+
+- name: Remove HTTP handlers
+  win_shell: |
+    $handlerExists = {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list config -section:system.webServer/handlers | Select-String -Pattern "name='{{ item }}'"
+    if ($handlerExists) {
+        {{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/handlers /-"[name='{{ item }}']" /commit:apphost
+    }
+  loop: "{{ configuration.InstallIIS.RemoveHandler }}"
+  register: remove_handler_result
+  failed_when: "remove_handler_result.rc != 0 and 'Cannot find requested collection element' not in remove_handler_result.stdout"
+
+- name: Add IIS modules
+  win_shell: |
+    $command = "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe list config -section:system.webServer/modules /xml"
+    $xmlOutput = Invoke-Expression $command
+    Try {
+      [xml]$config = $xmlOutput
+      $moduleExists = $config.SelectSingleNode("//add[@name='{{ item.name }}']") -ne $null
+      if (-not $moduleExists) {
+        $addCmd = "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.webServer/modules /+""[name='{{ item.name }}',type='{{ item.type }}']"" /commit:apphost"
+        Invoke-Expression $addCmd
+      }
+    } Catch {
+      Write-Error "Failed to parse XML or execute module addition: $_"
+    }
+  loop: "{{ configuration.InstallIIS.AddModule }}"
+  register: add_module_result
+  failed_when: "add_module_result.rc != 0 and 'ERROR' in add_module_result.stdout"
+
+- name: Check for .NET Framework v4.0.30319 CONFIG file
+  win_stat:
+    path: C:\Windows\Microsoft.NET\Framework\v4.0.30319\Config\web.config
+  register: net_framework_v4_config
+
+- name: Configure .NET Framework v4.0.30319 settings
+  win_shell: |
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.net/mailSettings/smtp /from:'{{ email_address }}' /commit:machine /clr:4"
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.net/mailSettings/smtp /network.host:'{{ smtp_server }}' /commit:machine /clr:4"
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.net/connectionManagement /+`"[address='*',maxconnection='{{ max_connections }}']`" /commit:webroot /clr:4"
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.net/defaultProxy /proxy.bypassonlocal:'true' /proxy.usesystemdefault:'false' /commit:webroot /clr:4"
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/compilation /debug:'False' /defaultLanguage:'c#' /commit:webroot /clr:4"
+    "{{ ansible_env.windir }}\\System32\\inetsrv\\appcmd.exe set config -section:system.web/healthMonitoring /+`"rules.[eventName='Application Lifetime Events',minInterval='00:01:00',name='App Lifetime Events',profile='Default',provider='EventLogProvider']`" /commit:webroot /clr:4"
+  when: net_framework_v4_config.stat.exists
